@@ -9,9 +9,9 @@ if __name__ == '__main__':
         if sys.argv[1] == 'qishui':
             qishui_ad()
             loop_process()
-        if sys.argv[1] == 'xima':
+        elif sys.argv[1] == 'xima':
             print("xiaomi ad")
-        if sys.argv[1] == 'test':
+        elif sys.argv[1] == 'test':
             position = find_image_on_screen("images/qishui/gz-close.png")
             print(position)
             # pyautogui.moveTo(position)

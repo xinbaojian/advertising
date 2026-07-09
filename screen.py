@@ -1,20 +1,29 @@
+import functools
 import os
 import time
+
 import cv2
 import numpy as np
 import pyautogui
+
 from applescript import call_iphone
+
+
+@functools.lru_cache(maxsize=32)
+def _load_template(template_path):
+    """读取并缓存模板图片：同一文件在循环里不重复读盘/解码。"""
+    return cv2.imread(template_path, cv2.IMREAD_COLOR)
 
 
 def find_image_on_screen(template_path, threshold=0.8, window_bounds=None):
     """
     在屏幕上查找图片模板的位置
-    
+
     Args:
         template_path: 模板图片路径
         threshold: 匹配阈值，范围0-1，值越高表示匹配要求越严格
         window_bounds: 可选，(x1, y1, x2, y2) 屏幕逻辑坐标，用于限定在该窗口内匹配
-    
+
     Returns:
         tuple: (x, y) 逻辑坐标，如果未找到返回 None
     """
@@ -22,31 +31,27 @@ def find_image_on_screen(template_path, threshold=0.8, window_bounds=None):
     if not os.path.exists(template_path):
         print(f"错误：图片文件不存在 - {template_path}")
         return None
-    
+
+    # 先读模板（命中缓存），模板异常时就不必白截一次屏
+    template = _load_template(template_path)
+    if template is None:
+        print(f"错误：无法读取模板图片 - {template_path}")
+        return None
+    template_h, template_w = template.shape[:2]
+
     # 获取屏幕逻辑尺寸（point）
     screen_width, screen_height = pyautogui.size()
-    
+
     # 截取当前屏幕（PIL Image，通常为像素尺寸，Retina 下为 2x）
     screenshot = pyautogui.screenshot()
     shot_w, shot_h = screenshot.size
-    
+
     # 计算缩放比例（像素/逻辑点）
     scale_x = (shot_w / screen_width) if screen_width else 1.0
     scale_y = (shot_h / screen_height) if screen_height else 1.0
 
     # 转为 OpenCV BGR
-    screenshot_np = np.array(screenshot)
-    screenshot_bgr = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
-    
-    # 读取模板图片
-    template = cv2.imread(template_path, cv2.IMREAD_COLOR)
-    
-    if template is None:
-        print(f"错误：无法读取模板图片 - {template_path}")
-        return None
-    
-    # 模板图片尺寸
-    template_h, template_w = template.shape[:2]
+    screenshot_bgr = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
 
     # 计算匹配用的图像与坐标偏移
     use_roi = False
@@ -67,10 +72,10 @@ def find_image_on_screen(template_path, threshold=0.8, window_bounds=None):
 
     # 使用模板匹配（在 ROI 或全屏上）
     result = cv2.matchTemplate(match_img, template, cv2.TM_CCOEFF_NORMED)
-    
+
     # 找到最大匹配值的位置
     min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-    
+
     # 检查最大匹配值是否超过阈值
     if max_val >= threshold:
         # 计算匹配区域的中心像素坐标（相对全屏像素）
@@ -80,7 +85,7 @@ def find_image_on_screen(template_path, threshold=0.8, window_bounds=None):
         # 转换为屏幕逻辑坐标
         logical_x = int(round(center_x_px / scale_x))
         logical_y = int(round(center_y_px / scale_y))
-        
+
         # 返回逻辑坐标，便于后续用 pyautogui.click
         return (logical_x, logical_y)
     else:
@@ -102,7 +107,6 @@ def click_qi_shui_icon():
         print(f"已点击汽水音乐图标 {icon_pos}")
     else:
         print("未找到汽水音乐图标")
-        return
 
 
 def countdown(times=1):
@@ -134,7 +138,7 @@ def un_lock():
             pyautogui.press('enter')
             print("已输入密码，等待解锁")
             countdown(5)
-            
+
         if find_image_on_screen("images/safari.png"):
             print("屏幕已解锁，开始执行任务")
             break
