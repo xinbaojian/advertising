@@ -15,12 +15,37 @@ def _load_template(template_path):
     return cv2.imread(template_path, cv2.IMREAD_COLOR)
 
 
-def find_image_on_screen(template_path, threshold=0.8, window_bounds=None):
+def capture_screen_frame():
+    """截取全屏并转换为 OpenCV BGR 帧。
+
+    一轮 UI 判断只截一次屏，多个模板都在这同一帧上匹配：
+    避免重复截图的开销，同时保证多个元素的状态判断基于同一时刻。
+
+    Returns:
+        tuple: (frame, scale_x, scale_y)
+            frame: BGR numpy 数组（像素尺寸，Retina 下为逻辑尺寸的 2x）
+            scale_x / scale_y: 像素 / 逻辑点 比例
     """
-    在屏幕上查找图片模板的位置
+    screenshot = pyautogui.screenshot()
+    shot_w, shot_h = screenshot.size
+    screen_width, screen_height = pyautogui.size()
+
+    scale_x = (shot_w / screen_width) if screen_width else 1.0
+    scale_y = (shot_h / screen_height) if screen_height else 1.0
+
+    frame = cv2.cvtColor(np.asarray(screenshot), cv2.COLOR_RGB2BGR)
+    return frame, scale_x, scale_y
+
+
+def find_image_in_frame(frame, template_path, scale_x=1.0, scale_y=1.0,
+                        threshold=0.8, window_bounds=None):
+    """
+    在已截取的帧上查找图片模板的位置（不重复截图）
 
     Args:
+        frame: capture_screen_frame() 返回的 BGR 帧
         template_path: 模板图片路径
+        scale_x / scale_y: capture_screen_frame() 返回的缩放比例
         threshold: 匹配阈值，范围0-1，值越高表示匹配要求越严格
         window_bounds: 可选，(x1, y1, x2, y2) 屏幕逻辑坐标，用于限定在该窗口内匹配
 
@@ -32,31 +57,19 @@ def find_image_on_screen(template_path, threshold=0.8, window_bounds=None):
         print(f"错误：图片文件不存在 - {template_path}")
         return None
 
-    # 先读模板（命中缓存），模板异常时就不必白截一次屏
+    # 读模板（命中缓存），模板异常时就不必白匹配一次
     template = _load_template(template_path)
     if template is None:
         print(f"错误：无法读取模板图片 - {template_path}")
         return None
     template_h, template_w = template.shape[:2]
 
-    # 获取屏幕逻辑尺寸（point）
-    screen_width, screen_height = pyautogui.size()
-
-    # 截取当前屏幕（PIL Image，通常为像素尺寸，Retina 下为 2x）
-    screenshot = pyautogui.screenshot()
-    shot_w, shot_h = screenshot.size
-
-    # 计算缩放比例（像素/逻辑点）
-    scale_x = (shot_w / screen_width) if screen_width else 1.0
-    scale_y = (shot_h / screen_height) if screen_height else 1.0
-
-    # 转为 OpenCV BGR
-    screenshot_bgr = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+    shot_h, shot_w = frame.shape[:2]
 
     # 计算匹配用的图像与坐标偏移
     use_roi = False
     rx1 = ry1 = 0
-    match_img = screenshot_bgr
+    match_img = frame
 
     if window_bounds and isinstance(window_bounds, tuple) and len(window_bounds) == 4:
         x1, y1, x2, y2 = window_bounds
@@ -67,10 +80,10 @@ def find_image_on_screen(template_path, threshold=0.8, window_bounds=None):
             rx2 = min(shot_w, int(round(x2 * scale_x)))
             ry2 = min(shot_h, int(round(y2 * scale_y)))
             if rx2 > rx1 and ry2 > ry1:
-                match_img = screenshot_bgr[ry1:ry2, rx1:rx2]
+                match_img = frame[ry1:ry2, rx1:rx2]
                 use_roi = True
 
-    # 使用模板匹配（在 ROI 或全屏上）
+    # 使用模板匹配（在 ROI 或全帧上）
     result = cv2.matchTemplate(match_img, template, cv2.TM_CCOEFF_NORMED)
 
     # 找到最大匹配值的位置
@@ -78,7 +91,7 @@ def find_image_on_screen(template_path, threshold=0.8, window_bounds=None):
 
     # 检查最大匹配值是否超过阈值
     if max_val >= threshold:
-        # 计算匹配区域的中心像素坐标（相对全屏像素）
+        # 计算匹配区域的中心像素坐标（相对全帧像素）
         center_x_px = max_loc[0] + template_w // 2 + (rx1 if use_roi else 0)
         center_y_px = max_loc[1] + template_h // 2 + (ry1 if use_roi else 0)
 
@@ -90,6 +103,53 @@ def find_image_on_screen(template_path, threshold=0.8, window_bounds=None):
         return (logical_x, logical_y)
     else:
         return None
+
+
+def find_images_in_frame(frame, template_paths, scale_x=1.0, scale_y=1.0,
+                         threshold=0.8, window_bounds=None):
+    """
+    在帧上按顺序查找多个模板，返回第一个命中的结果
+
+    适用于同一按钮的多张截图变体（如 success.png / success1.png），
+    多个模板共享同一次截图，按顺序取第一个超过阈值的。
+
+    Args:
+        frame: capture_screen_frame() 返回的 BGR 帧
+        template_paths: 模板图片路径列表（按优先级排序）
+        scale_x / scale_y: capture_screen_frame() 返回的缩放比例
+        threshold: 匹配阈值，范围0-1
+        window_bounds: 可选，(x1, y1, x2, y2) 屏幕逻辑坐标
+
+    Returns:
+        tuple: (template_path, position)，均未命中返回 (None, None)
+    """
+    for template_path in template_paths:
+        position = find_image_in_frame(frame, template_path, scale_x, scale_y,
+                                       threshold, window_bounds)
+        if position:
+            return template_path, position
+    return None, None
+
+
+def find_image_on_screen(template_path, threshold=0.8, window_bounds=None):
+    """
+    在屏幕上查找图片模板的位置（单次截图，供低频调用方使用）
+
+    需要在一帧上匹配多个模板时，请改用 capture_screen_frame()
+    + find_image_in_frame() / find_images_in_frame() 组合，避免重复截图。
+
+    Args:
+        template_path: 模板图片路径
+        threshold: 匹配阈值，范围0-1，值越高表示匹配要求越严格
+        window_bounds: 可选，(x1, y1, x2, y2) 屏幕逻辑坐标，用于限定在该窗口内匹配
+
+    Returns:
+        tuple: (x, y) 逻辑坐标，如果未找到返回 None
+    """
+    frame, scale_x, scale_y = capture_screen_frame()
+    return find_image_in_frame(frame, template_path, scale_x, scale_y,
+                               threshold, window_bounds)
+
 
 def find_qi_shui_icon():
     """

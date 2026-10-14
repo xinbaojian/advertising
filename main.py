@@ -13,8 +13,11 @@ if __name__ == '__main__':
             print("xiaomi ad")
         elif sys.argv[1] == 'test':
             position = find_image_on_screen("images/qishui/gz-close.png")
-            print(position)
-            # pyautogui.moveTo(position)
-            pyautogui.click(position)
+            if position:
+                print(position)
+                # pyautogui.moveTo(position)
+                pyautogui.click(position)
+            else:
+                print("未找到目标图片")
     else:
         print("使用方法: python3 main.py qishui")
